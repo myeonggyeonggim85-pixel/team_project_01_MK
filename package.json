@@ -1,0 +1,15 @@
+{
+  "name": "used-trade-damage-guide",
+  "private": true,
+  "type": "module",
+  "description": "중고거래 피해 대응 길잡이 — 365센터 상담 보조 진단·안내 도구(시제품)",
+  "scripts": {
+    "start": "node --env-file=.env server.js"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0"
+  }
+}
