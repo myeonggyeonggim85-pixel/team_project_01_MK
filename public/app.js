@@ -121,6 +121,7 @@ function askField(k) {
   const q = k === 'situation' && state.vagueMistake
     ? '계좌번호나 금액을 잘못 입력하셨나요, 거래 상대에게 보냈는데 문제가 생겼나요?'
     : def.question;
+  state.lastQuestion = q;
   bubble('bot', q);
   setChoices([
     ...def.options.map((o) => ({ text: o.text, onClick: () => answer(k, o.value, o.text, o.set) })),
@@ -827,6 +828,37 @@ async function askQuestion(q) {
   if (resp.sources?.length) {
     node.append(el('div', { class: 'msg__sources' }, '근거 문서: ',
       ...resp.sources.flatMap((s, i) => [i ? ' · ' : '', s.url ? el('a', { href: s.url, target: '_blank', rel: 'noopener' }, s.name) : s.name])));
+  }
+}
+
+// ---------- 추천 질문(자주 묻는 질문) ----------
+// 안내 문서(docs/답변참고문서/청킹)에 근거가 있는 질문만 둔다. 누르면 진단 흐름은 그대로 두고 답만 보여 준다.
+const FAQS = [
+  '보낸 돈을 돌려받을 수 있나요?',
+  '경찰서에 신고하는 방법을 알려 주세요',
+  '은행에 지급정지를 요청할 수 있나요?',
+  '소액인데 빨리 돌려받는 방법이 있나요?',
+  '온라인피해 365센터는 어떤 곳이에요?',
+  '분쟁조정은 어떻게 신청하나요?',
+  '더치트에 피해 사례를 등록해도 되나요?',
+  '악성앱 설치가 의심될 때는 어떻게 해야 하나요?',
+];
+const faqEl = $('#faq');
+FAQS.forEach((q) => faqEl.append(el('button', { type: 'button', class: 'faq__chip', onclick: () => onFaq(q) }, q)));
+
+async function onFaq(q) {
+  if (state.busy) return;
+  state.busy = true;
+  state.userActed = true;
+  faqEl.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  try {
+    bubble('user', q);
+    await askQuestion(q);
+    // 진단 중이었다면 답 다음에 지금 질문을 다시 보여 줘서 이어가기 쉽게 한다
+    if (state.stage === 'asking' && state.lastQuestion) bubble('bot', `답이 도움이 되셨길 바라요. 이어서 여쭤볼게요.\n${state.lastQuestion}`);
+  } finally {
+    state.busy = false;
+    faqEl.querySelectorAll('button').forEach((b) => { b.disabled = false; });
   }
 }
 
