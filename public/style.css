@@ -222,21 +222,10 @@ details[open] > summary { margin-bottom: 8px; }
 .steps { margin: 0; padding-left: 20px; font-size: 14px; }
 .steps li { margin: 3px 0; }
 
-.facts { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 13px; margin-bottom: 12px; padding: 12px 14px; background: var(--tint-2); border: 0; border-radius: 12px; }
-.facts dt { color: var(--fg-4); }
-.facts dd { margin: 0; color: var(--fg-1); font-weight: 500; }
-.facts dd.is-unknown { color: var(--fg-4); font-weight: 400; }
-
-.rules-scroll { overflow-x: auto; }
-.rules { width: 100%; border-collapse: collapse; border-top: 0; font-size: 12px; line-height: 1.45; }
-.rules th { background: var(--tint); color: var(--navy-950); font-weight: 700; padding: 8px 6px; border-bottom: 0; text-align: left; white-space: nowrap; }
-.rules td { padding: 6px 5px; border-bottom: 1px solid var(--line-input); color: var(--fg-body); vertical-align: top; }
-.rules td:first-child { text-align: center; font-weight: 500; color: var(--blue-600); }
-.rules .any { color: var(--fg-4); }
-.rules tr.is-match td { background: var(--row-hover); color: var(--fg-1); font-weight: 500; }
-.rules tr.is-match td:first-child { box-shadow: inset 4px 0 0 var(--primary); }
-.rules tr.is-match.is-fraud td:first-child { box-shadow: inset 4px 0 0 var(--alert); }
-.rules .res-fraud { color: var(--alert); font-weight: 500; }
+.understood-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.understood-list li { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--tint-2); border-radius: 12px; }
+.understood-list span { font-size: 13px; color: var(--fg-3); min-width: 88px; }
+.understood-list b { color: var(--navy-950); font-weight: 700; }
 
 /* ---------- 상담원 연결 대화상자 ---------- */
 .dialog { border: 0; border-radius: var(--r-card); padding: 30px; max-width: 560px; width: calc(100% - 32px); box-shadow: var(--shadow-float); }

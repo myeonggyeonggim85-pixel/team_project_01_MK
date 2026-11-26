@@ -1,6 +1,6 @@
 // 길잡이 화면 동작 — 분류와 정리표는 rules.js(코드)가 하고, AI 는 /api 를 통해서만 부른다
 import {
-  FIELDS, UNKNOWN, RULES, RESULT_LABEL, CONTACTS,
+  FIELDS, UNKNOWN, RESULT_LABEL, CONTACTS,
   emptyFacts, detectCrisis, guessFacts, classify, nextQuestion,
   buildSheet, buildHandoff, isDirectPay, isRealSafePay, ATTACH_TYPES,
 } from './rules.js';
@@ -90,43 +90,9 @@ async function postJson(url, data) {
   return r.json();
 }
 
-// ---------- 오른쪽 규칙표 ----------
+// 이해한 사실 항목(「이렇게 이해했어요」 카드에서 고칠 수 있는 칸)
 const SHOWN = ['situation', 'product', 'payment', 'lure', 'receipt', 'contact', 'fakePost'];
-function renderFacts() {
-  const items = SHOWN.flatMap((k) => {
-    const v = state.facts[k];
-    return [el('dt', {}, FIELDS[k].label), el('dd', { class: v === UNKNOWN ? 'is-unknown' : '' }, v)];
-  });
-  $('#facts').replaceChildren(...items);
-}
 
-function renderRules() {
-  const tbody = $('#rules tbody');
-  const r = state.result;
-  const matched = r && r.type !== 'out' ? (r.rule || '-') : null;
-  const cell = (v) => (v ? el('td', {}, v) : el('td', { class: 'any' }, '상관없음'));
-  const rows = RULES.map((rule) => el('tr', { class: `${matched === rule.no ? 'is-match' : ''}${rule.result === 'fraud' ? ' is-fraud' : ''}` },
-    el('td', {}, rule.no), cell(rule.receipt), cell(rule.contact), cell(rule.fakePost || rule.lure),
-    el('td', { class: rule.result === 'fraud' ? 'res-fraud' : '' }, RESULT_LABEL[rule.result])));
-  rows.push(el('tr', { class: matched === '-' ? 'is-match' : '' }, el('td', {}, '-'), el('td', { colspan: 3 }, '그 밖의 모든 경우'), el('td', {}, '판단 어려움')));
-  tbody.replaceChildren(...rows);
-  renderFacts();
-}
-
-// ---------- 위기 안내: 어떤 결과보다 먼저, 대화 맨 위에 ----------
-function showCrisis() {
-  state.facts.crisis = '있음'; // 상담원 요약에도 위기 표현이 남도록
-  if (state.crisisShown) { $('#crisisSlot').firstElementChild?.scrollIntoView({ block: 'nearest' }); return; }
-  state.crisisShown = true;
-  const box = el('div', { class: 'crisis', role: 'alert' },
-    el('p', { class: 'crisis__title' }, '많이 힘드시죠. 지금 이야기 나눌 사람이 있어요.'),
-    el('a', { class: 'crisis__tel', href: 'tel:109' }, '☎ 109 자살예방 상담전화'),
-    el('p', {}, '24시간 언제든 무료로 전화할 수 있어요. 원하시면 아래에서 피해 상황 정리도 이어서 도와드릴게요.'));
-  $('#crisisSlot').replaceChildren(box);
-  box.scrollIntoView({ block: 'nearest' });
-}
-
-// ---------- 흐름 ----------
 function start() {
   state.attachments.forEach((a) => a.url && URL.revokeObjectURL(a.url));
   Object.assign(state, { facts: emptyFacts(), asked: new Set(), stage: 'start', result: null, vagueMistake: false, sheetInput: { timeline: [{ when: '', what: '' }] }, history: [], attachments: [], refreshSheet: null });
@@ -134,9 +100,8 @@ function start() {
   if (state.crisisShown) state.facts.crisis = '있음';
   logEl.replaceChildren();
   $('.print-area')?.remove();
-  inputEl.placeholder = '예: 이어폰 산다고 15만 원 보냈는데 판매자가 답이 없어요';
-  renderRules();
-  bubble('bot', '안녕하세요. 아래 버튼을 누르거나, 맨 아래 입력칸에 있었던 일을 편하게 써 주세요.\n길잡이는 돈 · 비밀번호 · 인증번호를 묻지 않아요.');
+  inputEl.placeholder = '직접 쓰셔도 돼요. 예: 이어폰 산다고 15만 원 보냈는데 판매자가 답이 없어요';
+  bubble('bot', '많이 놀라셨죠. 차근차근 같이 정리해 볼게요.\n아래에서 비슷한 상황을 누르거나, 있었던 일을 편하게 써 주세요.');
   askField('situation');
 }
 
@@ -179,7 +144,6 @@ function back() {
   state.result = null;
   while (logEl.children.length > prev.logCount) logEl.lastElementChild.remove();
   inputEl.placeholder = '예: 이어폰 산다고 15만 원 보냈는데 판매자가 답이 없어요';
-  renderRules();
   askField(prev.k);
 }
 
@@ -196,7 +160,6 @@ function answer(k, value, text, set = null) {
   }
   state.result = null;
   if (k === 'situation') state.vagueMistake = false;
-  renderRules();
   proceed();
 }
 
@@ -253,7 +216,6 @@ async function handleText(text) {
     if (v !== UNKNOWN) state.facts[k] = v;
   }
   if (resp.facts?.crisis === '있음') showCrisis();
-  renderRules();
   showUnderstood(resp);
 }
 
@@ -275,6 +237,7 @@ function showUnderstood(resp) {
     selects[k] = sel;
     grid.append(el('label', { for: id }, FIELDS[k].label), sel);
   }
+  const known = SHOWN.filter((k) => state.facts[k] && state.facts[k] !== UNKNOWN);
   const go = () => {
     if (state.busy) return;
     lockOldCards();
@@ -284,12 +247,16 @@ function showUnderstood(resp) {
     }
     state.result = null;
     bubble('user', '맞아요, 이어서 진행할게요');
-    renderRules();
     proceed();
   };
   const card = el('div', { class: 'card' },
     el('div', { class: 'card__head' }, '이렇게 이해했어요'),
-    el('div', { class: 'card__body' }, el('p', { class: 'disclaimer', style: 'margin-bottom:10px' }, '틀린 칸은 바로 고칠 수 있어요. "모름"인 칸은 버튼으로 다시 여쭤볼게요.'), grid),
+    el('div', { class: 'card__body' },
+      known.length
+        ? el('ul', { class: 'understood-list' }, ...known.map((k) => el('li', {}, el('span', {}, FIELDS[k].label), el('b', {}, state.facts[k]))))
+        : el('p', { class: 'disclaimer' }, '아직 파악된 내용이 없어요. 이어서 하나씩 여쭤볼게요.'),
+      el('p', { class: 'disclaimer', style: 'margin-top:10px' }, '모르는 부분은 이어서 하나씩 여쭤볼게요.'),
+      el('details', { class: 'more' }, el('summary', {}, '틀린 곳이 있어요 (고치기)'), grid)),
     el('div', { class: 'card__foot' }, el('button', { type: 'button', class: 'btn btn--navy', onclick: go }, state.crisisShown ? '이어서 피해 상황 정리하기' : '맞아요, 계속')));
   const node = wide(card);
   node.append(metaLine(resp));
@@ -448,11 +415,10 @@ function showResult() {
   const f = state.facts;
   const r = classify(f);
   state.result = r;
-  renderRules();
 
   const key = TITLES[r.scheme?.id] ? r.scheme.id : (TITLES[r.sub] ? r.sub : r.type);
   const why = r.rule
-    ? el('p', { class: 'result__why' }, '분류 규칙표 ', el('b', {}, `${r.rule}번 줄`), `에 맞았어요: ${r.reason}.`)
+    ? el('p', { class: 'result__why' }, `${r.reason}.`)
     : el('p', { class: 'result__why' }, `${r.reason}.`);
   const schemeWhy = r.scheme
     ? el('p', { class: 'result__why', style: 'margin-top:4px' }, '수법 구분: ', el('b', {}, r.scheme.name), ` — ${r.scheme.basis}. 수법은 안내를 고르기 위한 구분이며, 사기인지는 수사기관이 판단해요.`)
