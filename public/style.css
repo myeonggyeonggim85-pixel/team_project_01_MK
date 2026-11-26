@@ -39,7 +39,7 @@
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
-  background: var(--navy-900);
+  background: var(--navy-950);
   color: var(--fg-body);
   font: 400 15px/1.7 var(--font);
   word-break: keep-all;
@@ -56,7 +56,7 @@ b, strong { font-weight: 700; }
 .wrap { max-width: 1300px; margin: 0 auto; padding: 0 20px; }
 
 /* ---------- 헤더 ---------- */
-.top { background: var(--navy-900); color: #fff; }
+.top { background: var(--primary); color: #fff; border-bottom: 1px solid rgba(255, 255, 255, .25); }
 .top__in { min-height: 65px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding-top: 10px; padding-bottom: 10px; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand__mark { width: 34px; height: 34px; display: grid; place-items: center; background: var(--green-500); color: #000; font-weight: 700; font-size: 17px; border-radius: 4px; }
