@@ -39,7 +39,7 @@
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
-  background: var(--bg-section);
+  background: var(--navy-900);
   color: var(--fg-body);
   font: 400 15px/1.7 var(--font);
   word-break: keep-all;
