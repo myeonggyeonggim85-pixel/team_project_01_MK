@@ -25,6 +25,11 @@ const state = {
   userActed: false, // 첫 화면에서는 포커스를 옮기지 않는다
   attachments: [], // 올린 캡처 — 브라우저 메모리에만 둔다(서버 · AI 로 보내지 않음)
   refreshSheet: null, // 결과 화면의 정리표 미리보기를 다시 그리는 함수
+  askedQ: new Set(), // 이미 답해 준 추천 질문(같은 추천이 되풀이되지 않게)
+  fillActive: false, // 정리표 채우기 중인지
+  fillStepId: null,
+  fillCard: null,
+  closed: false, // 「안내 마칠게요」를 눌렀는지
 };
 
 // 화면 낭독기에는 짧은 안내만 읽어 준다(대화 전체를 읽지 않게)
@@ -95,7 +100,7 @@ const SHOWN = ['situation', 'product', 'payment', 'lure', 'receipt', 'contact', 
 
 function start() {
   state.attachments.forEach((a) => a.url && URL.revokeObjectURL(a.url));
-  Object.assign(state, { facts: emptyFacts(), asked: new Set(), stage: 'start', result: null, vagueMistake: false, sheetInput: { timeline: [{ when: '', what: '' }] }, history: [], attachments: [], refreshSheet: null });
+  Object.assign(state, { facts: emptyFacts(), asked: new Set(), stage: 'start', result: null, vagueMistake: false, sheetInput: { timeline: [{ when: '', what: '' }] }, history: [], attachments: [], refreshSheet: null, askedQ: new Set(), fillActive: false, fillStepId: null, fillCard: null, closed: false });
   // 109 상자는 한번 뜨면 처음부터 다시 해도 남겨 둔다(안전 우선). 상담원 요약에도 위기 표현을 유지
   if (state.crisisShown) state.facts.crisis = '있음';
   logEl.replaceChildren();
@@ -198,7 +203,10 @@ async function handleText(text) {
       bubble('bot', '지금 많이 힘드시다면 먼저 ☎109 자살예방 상담전화에 연락해 주세요. 24시간 언제든 무료예요.\n피해 정리와 기관 안내는 위 결과에 그대로 남아 있어요.');
       return;
     }
-    return askQuestion(text);
+    state.askedQ.add(text);
+    await askQuestion(text);
+    afterAnswer();
+    return;
   }
   setChoices([]);
   state.vagueMistake = /잘못\s*(보냈|보낸|송금|이체)/.test(text) && !/계좌번호|금액/.test(text);
@@ -468,24 +476,117 @@ function showResult() {
   title.focus({ preventScroll: true });
   box.scrollIntoView({ block: 'start' });
   announce(`진단 결과: ${badge}. ${TITLES[key]}`);
-  inputEl.placeholder = '기관 절차를 더 물어보세요';
-  setChoices([
-    ...suggestions(r).map((q) => ({ text: q, onClick: () => onFreeText(q) })),
-    { text: '처음부터 다시', quiet: true, onClick: start },
-  ]);
+  inputEl.placeholder = '궁금한 점을 직접 물어보셔도 돼요';
+  renderFollowChoices();
   // 결과를 먼저 읽게 두고(화면을 옮기지 않음), 그 아래에서 정리표 채우기 질문을 이어서 한다
   if (hasSheet) startFill(f, r);
+  else askClosing();
 }
 
-// 결과 종류에 맞는 추천 질문
+// 결과 종류에 맞는 추천 질문 — 모두 안내 문서(docs/답변참고문서/청킹)에서 근거를 찾을 수 있는 문장이다
 function suggestions(r) {
   const id = r.scheme?.id;
-  if (id === 'phishing') return ['악성 앱을 설치했으면 어떻게 해요?', '보이스피싱 지급정지는 어떻게 해요?'];
-  if (id === 'fakepay') return ['진짜 안전결제는 어떻게 구별해요?', '경찰 신고할 때 뭘 준비해요?'];
-  if (r.type === 'fraud') return ['경찰 신고할 때 뭘 준비해요?', '은행이 지급정지를 해 주나요?'];
+  if (id === 'phishing') return ['악성앱 설치가 의심될 때는 어떻게 해야 하나요?', '보이스피싱 지급정지는 어떻게 해요?'];
+  if (id === 'fakepay') return ['진짜 안전결제는 어떻게 구별해요?', '경찰서에 신고하는 방법을 알려 주세요'];
+  if (r.type === 'fraud') return ['경찰서에 신고하는 방법을 알려 주세요', '은행에 지급정지를 요청할 수 있나요?'];
   if (r.type === 'dispute') return ['분쟁조정은 어떻게 신청해요?', '지급명령이 뭐예요?'];
   if (r.sub === 'mistake') return ['착오송금 반환지원은 어떻게 신청해요?'];
-  return ['365센터 상담은 어떻게 받아요?', '경찰 신고할 때 뭘 준비해요?'];
+  return ['365센터 상담은 어떻게 받아요?', '경찰서에 신고하는 방법을 알려 주세요'];
+}
+
+// 어느 결과에서나 이어서 물어볼 만한 질문(결과별 추천이 떨어지면 이쪽에서 채운다)
+const MORE_QUESTIONS = [
+  '보낸 돈을 돌려받을 수 있나요?',
+  '소액인데 빨리 돌려받는 방법이 있나요?',
+  '온라인피해 365센터는 어떤 곳이에요?',
+  '더치트에 피해 사례를 등록해도 되나요?',
+  '중고거래 플랫폼에는 어떻게 신고하나요?',
+  '거래를 취소하고 손해배상을 받을 수 있나요?',
+];
+
+// 정리표 채우기 단계마다 그 순간 궁금할 만한 질문
+const FILL_QUESTIONS = {
+  when: ['경찰서에 신고하는 방법을 알려 주세요', '보낸 돈을 돌려받을 수 있나요?'],
+  account: ['은행에 지급정지를 요청할 수 있나요?', '보낸 돈을 돌려받을 수 있나요?'],
+  who: ['더치트에 피해 사례를 등록해도 되나요?', '중고거래 플랫폼에는 어떻게 신고하나요?'],
+  item: ['중고거래 플랫폼에는 어떻게 신고하나요?', '거래를 취소하고 손해배상을 받을 수 있나요?'],
+  files: ['경찰서에 신고하는 방법을 알려 주세요', '소액인데 빨리 돌려받는 방법이 있나요?'],
+};
+
+function pickSuggestions(n = 3) {
+  const pool = state.fillActive
+    ? (FILL_QUESTIONS[state.fillStepId] || [])
+    : [...suggestions(state.result || {}), ...MORE_QUESTIONS];
+  return [...new Set(pool)].filter((q) => !state.askedQ.has(q)).slice(0, n);
+}
+
+// 답을 해 준 뒤·결과를 보여 준 뒤마다 「다음에 누를 만한 것」을 바닥 선택지로 다시 깐다
+function renderFollowChoices() {
+  const asks = pickSuggestions().map((q) => ({ text: q, onClick: () => onFreeText(q) }));
+  if (state.fillActive) {
+    setChoices([
+      ...asks,
+      { text: '↑ 정리표 채우기로 돌아가기', quiet: true, onClick: () => state.fillCard?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
+    ]);
+    return;
+  }
+  if (state.closed) {
+    setChoices([
+      { text: '궁금한 점이 더 생겼어요', onClick: reopenGuide },
+      { text: '처음부터 다시', quiet: true, onClick: start },
+    ]);
+    return;
+  }
+  setChoices([
+    ...asks,
+    { text: '괜찮아요 · 안내 마칠게요', onClick: endGuide },
+    { text: '처음부터 다시', quiet: true, onClick: start },
+  ]);
+}
+
+// 정리표(또는 결과)까지 본 뒤: 더 궁금한 점이 없는지 먼저 묻고, 대답을 들은 뒤에 마친다
+function askClosing() {
+  bubble('bot', '여기까지 정리해 드렸어요. 혹시 더 궁금한 점이나, 막막한 부분은 없으세요?\n아래 추천 질문을 누르거나 직접 물어봐 주세요. 괜찮으시면 안내를 마칠게요.');
+  announce('더 궁금한 점이 없는지 확인해요.');
+  renderFollowChoices();
+}
+
+function endGuide() {
+  if (state.busy) return;
+  state.userActed = true;
+  state.closed = true;
+  bubble('user', '괜찮아요, 안내 마칠게요');
+  const f = state.facts;
+  const r = state.result || classify(f);
+  const todos = todoList(f, r).slice(0, 3);
+  const lines = [
+    '끝까지 읽어 주셔서 고마워요. 마지막으로 꼭 챙길 것만 다시 정리해 드릴게요.',
+    ...(todos.length ? ['', '지금 하실 일', ...todos.map((t, i) => `${i + 1}. ${t}`)] : []),
+    '',
+    '도움받을 곳',
+    '· 온라인피해 365센터 ☎142-235 (평일 09:00~18:00), 누리집 www.helpos.kr 온라인 상담(24시간 신청)',
+    '· 경찰 신고: 사이버범죄 신고시스템(ECRM), 급하면 ☎112',
+    '',
+    '혼자 감당하지 않으셔도 돼요. 많이 힘드시면 ☎109 자살예방 상담전화(24시간)도 있어요.',
+    '궁금한 점이 생기면 아래 입력칸에 언제든 물어보세요.',
+  ];
+  bubble('bot', lines.join('\n'));
+  announce('안내를 마쳤어요. 궁금한 점이 생기면 언제든 물어보세요.');
+  renderFollowChoices();
+}
+
+function reopenGuide() {
+  state.closed = false;
+  bubble('user', '궁금한 점이 더 생겼어요');
+  bubble('bot', '네, 편하게 물어보세요. 아래 추천 질문을 누르거나 직접 써 주셔도 돼요.');
+  renderFollowChoices();
+}
+
+// 질문에 답한 뒤 이어서 할 일을 안내한다
+function afterAnswer() {
+  if (state.fillActive) bubble('bot', '정리표는 위 카드에서 이어서 채우시면 돼요. 더 궁금한 건 계속 물어보세요.');
+  else if (!state.closed) bubble('bot', '다른 궁금한 점은 없으세요? 괜찮으시면 안내를 마칠게요.');
+  renderFollowChoices();
 }
 
 function copyButton(label, getText) {
@@ -734,6 +835,7 @@ const FILL_STEPS = [
 function startFill(f, r) {
   const intro = bubble('bot', '정리표를 같이 채워 볼까요? 몇 가지만 답하면 경찰 · 상담원이 바로 알아볼 수 있게 돼요.\n이 내용은 서버나 AI로 보내지 않고, 모르면 건너뛰어도 돼요.', null, { noScroll: true });
   state.fillAnchor = intro;
+  state.fillActive = true;
   runFill(f, r, 0, true);
 }
 
@@ -741,6 +843,7 @@ function runFill(f, r, i, first = false) {
   while (i < FILL_STEPS.length && FILL_STEPS[i].skip?.(f, r)) i++;
   if (i >= FILL_STEPS.length) { finishFill(); return; }
   const step = FILL_STEPS[i];
+  state.fillStepId = step.id;
   const total = FILL_STEPS.filter((s) => !s.skip?.(f, r)).length;
   const no = FILL_STEPS.slice(0, i + 1).filter((s) => !s.skip?.(f, r)).length;
   const body = step.attach
@@ -756,6 +859,8 @@ function runFill(f, r, i, first = false) {
     el('div', { class: 'card__body' }, el('p', { class: 'disclaimer', style: 'margin-bottom:10px' }, step.note), body),
     el('div', { class: 'card__foot' }, next, skip));
   wide(card, { noScroll: first });
+  state.fillCard = card;
+  renderFollowChoices();
   if (!first) card.querySelector('input, button')?.focus({ preventScroll: true });
 }
 
@@ -769,6 +874,9 @@ function finishFill() {
   const n = state.attachments.length;
   bubble('bot', el('span', {}, `정리표에 반영했어요. 결과의 「${n ? `정리표 + 캡처 ${n}개 내려받기` : '정리표 내려받기'}」를 누르면 ${n ? '정리표와 캡처 원본을 ZIP 파일 하나로' : '정리표를'} 받을 수 있어요.\n상담원 요약에도 함께 들어가요. `, toSheet));
   announce('정리표 채우기를 마쳤어요.');
+  state.fillActive = false;
+  state.fillCard = null;
+  askClosing();
 }
 
 // ---------- 근거 법령 ----------
@@ -828,37 +936,6 @@ async function askQuestion(q) {
   if (resp.sources?.length) {
     node.append(el('div', { class: 'msg__sources' }, '근거 문서: ',
       ...resp.sources.flatMap((s, i) => [i ? ' · ' : '', s.url ? el('a', { href: s.url, target: '_blank', rel: 'noopener' }, s.name) : s.name])));
-  }
-}
-
-// ---------- 추천 질문(자주 묻는 질문) ----------
-// 안내 문서(docs/답변참고문서/청킹)에 근거가 있는 질문만 둔다. 누르면 진단 흐름은 그대로 두고 답만 보여 준다.
-const FAQS = [
-  '보낸 돈을 돌려받을 수 있나요?',
-  '경찰서에 신고하는 방법을 알려 주세요',
-  '은행에 지급정지를 요청할 수 있나요?',
-  '소액인데 빨리 돌려받는 방법이 있나요?',
-  '온라인피해 365센터는 어떤 곳이에요?',
-  '분쟁조정은 어떻게 신청하나요?',
-  '더치트에 피해 사례를 등록해도 되나요?',
-  '악성앱 설치가 의심될 때는 어떻게 해야 하나요?',
-];
-const faqEl = $('#faq');
-FAQS.forEach((q) => faqEl.append(el('button', { type: 'button', class: 'faq__chip', onclick: () => onFaq(q) }, q)));
-
-async function onFaq(q) {
-  if (state.busy) return;
-  state.busy = true;
-  state.userActed = true;
-  faqEl.querySelectorAll('button').forEach((b) => { b.disabled = true; });
-  try {
-    bubble('user', q);
-    await askQuestion(q);
-    // 진단 중이었다면 답 다음에 지금 질문을 다시 보여 줘서 이어가기 쉽게 한다
-    if (state.stage === 'asking' && state.lastQuestion) bubble('bot', `답이 도움이 되셨길 바라요. 이어서 여쭤볼게요.\n${state.lastQuestion}`);
-  } finally {
-    state.busy = false;
-    faqEl.querySelectorAll('button').forEach((b) => { b.disabled = false; });
   }
 }
 
