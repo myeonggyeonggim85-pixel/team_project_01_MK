@@ -45,6 +45,6 @@ export default async function handler(req, res) {
 
   // AI 를 모두 못 썼을 때: 가장 가까운 조각을 그대로 보여 준다(시연 값)
   const top = found[0];
-  const excerpt = top.text.split(/\r?\n/).filter((l) => l && !l.startsWith('출처:') && !l.startsWith('키워드:') && !l.startsWith('관련 문의처')).join('\n').slice(0, 600);
+  const excerpt = top.text.split(/\r?\n/).filter((l) => l && !l.startsWith('출처:') && !l.startsWith('키워드:') && !l.startsWith('관련 문의처')).join('\n').replace(/^#+\s*/gm, '').replace(/\*\*/g, '').replace(/\n{2,}/g, '\n').slice(0, 600);
   return send(res, 200, { live: false, tried: ai.tried, answer: `가장 가까운 안내 문서 내용을 그대로 보여 드려요.\n\n${excerpt}`, sources: [{ name: top.docName, url: top.url }] });
 }

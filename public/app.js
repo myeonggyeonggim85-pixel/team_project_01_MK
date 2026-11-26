@@ -1,6 +1,6 @@
 // 길잡이 화면 동작 — 분류와 정리표는 rules.js(코드)가 하고, AI 는 /api 를 통해서만 부른다
 import {
-  FIELDS, UNKNOWN, RULES, RESULT_LABEL, CONTACTS,
+  FIELDS, UNKNOWN, RESULT_LABEL, CONTACTS,
   emptyFacts, detectCrisis, guessFacts, classify, nextQuestion,
   buildSheet, buildHandoff, isDirectPay, isRealSafePay, ATTACH_TYPES,
 } from './rules.js';
@@ -25,6 +25,11 @@ const state = {
   userActed: false, // 첫 화면에서는 포커스를 옮기지 않는다
   attachments: [], // 올린 캡처 — 브라우저 메모리에만 둔다(서버 · AI 로 보내지 않음)
   refreshSheet: null, // 결과 화면의 정리표 미리보기를 다시 그리는 함수
+  askedQ: new Set(), // 이미 답해 준 추천 질문(같은 추천이 되풀이되지 않게)
+  fillActive: false, // 정리표 채우기 중인지
+  fillStepId: null,
+  fillCard: null,
+  closed: false, // 「안내 마칠게요」를 눌렀는지
 };
 
 // 화면 낭독기에는 짧은 안내만 읽어 준다(대화 전체를 읽지 않게)
@@ -90,53 +95,18 @@ async function postJson(url, data) {
   return r.json();
 }
 
-// ---------- 오른쪽 규칙표 ----------
+// 이해한 사실 항목(「이렇게 이해했어요」 카드에서 고칠 수 있는 칸)
 const SHOWN = ['situation', 'product', 'payment', 'lure', 'receipt', 'contact', 'fakePost'];
-function renderFacts() {
-  const items = SHOWN.flatMap((k) => {
-    const v = state.facts[k];
-    return [el('dt', {}, FIELDS[k].label), el('dd', { class: v === UNKNOWN ? 'is-unknown' : '' }, v)];
-  });
-  $('#facts').replaceChildren(...items);
-}
 
-function renderRules() {
-  const tbody = $('#rules tbody');
-  const r = state.result;
-  const matched = r && r.type !== 'out' ? (r.rule || '-') : null;
-  const cell = (v) => (v ? el('td', {}, v) : el('td', { class: 'any' }, '상관없음'));
-  const rows = RULES.map((rule) => el('tr', { class: `${matched === rule.no ? 'is-match' : ''}${rule.result === 'fraud' ? ' is-fraud' : ''}` },
-    el('td', {}, rule.no), cell(rule.receipt), cell(rule.contact), cell(rule.fakePost || rule.lure),
-    el('td', { class: rule.result === 'fraud' ? 'res-fraud' : '' }, RESULT_LABEL[rule.result])));
-  rows.push(el('tr', { class: matched === '-' ? 'is-match' : '' }, el('td', {}, '-'), el('td', { colspan: 3 }, '그 밖의 모든 경우'), el('td', {}, '판단 어려움')));
-  tbody.replaceChildren(...rows);
-  renderFacts();
-}
-
-// ---------- 위기 안내: 어떤 결과보다 먼저, 대화 맨 위에 ----------
-function showCrisis() {
-  state.facts.crisis = '있음'; // 상담원 요약에도 위기 표현이 남도록
-  if (state.crisisShown) { $('#crisisSlot').firstElementChild?.scrollIntoView({ block: 'nearest' }); return; }
-  state.crisisShown = true;
-  const box = el('div', { class: 'crisis', role: 'alert' },
-    el('p', { class: 'crisis__title' }, '많이 힘드시죠. 지금 이야기 나눌 사람이 있어요.'),
-    el('a', { class: 'crisis__tel', href: 'tel:109' }, '☎ 109 자살예방 상담전화'),
-    el('p', {}, '24시간 언제든 무료로 전화할 수 있어요. 원하시면 아래에서 피해 상황 정리도 이어서 도와드릴게요.'));
-  $('#crisisSlot').replaceChildren(box);
-  box.scrollIntoView({ block: 'nearest' });
-}
-
-// ---------- 흐름 ----------
 function start() {
   state.attachments.forEach((a) => a.url && URL.revokeObjectURL(a.url));
-  Object.assign(state, { facts: emptyFacts(), asked: new Set(), stage: 'start', result: null, vagueMistake: false, sheetInput: { timeline: [{ when: '', what: '' }] }, history: [], attachments: [], refreshSheet: null });
+  Object.assign(state, { facts: emptyFacts(), asked: new Set(), stage: 'start', result: null, vagueMistake: false, sheetInput: { timeline: [{ when: '', what: '' }] }, history: [], attachments: [], refreshSheet: null, askedQ: new Set(), fillActive: false, fillStepId: null, fillCard: null, closed: false });
   // 109 상자는 한번 뜨면 처음부터 다시 해도 남겨 둔다(안전 우선). 상담원 요약에도 위기 표현을 유지
   if (state.crisisShown) state.facts.crisis = '있음';
   logEl.replaceChildren();
   $('.print-area')?.remove();
-  inputEl.placeholder = '예: 이어폰 산다고 15만 원 보냈는데 판매자가 답이 없어요';
-  renderRules();
-  bubble('bot', '안녕하세요. 아래 버튼을 누르거나, 맨 아래 입력칸에 있었던 일을 편하게 써 주세요.\n길잡이는 돈 · 비밀번호 · 인증번호를 묻지 않아요.');
+  inputEl.placeholder = '직접 쓰셔도 돼요. 예: 이어폰 산다고 15만 원 보냈는데 판매자가 답이 없어요';
+  bubble('bot', '많이 놀라셨죠. 차근차근 같이 정리해 볼게요.\n아래에서 비슷한 상황을 누르거나, 있었던 일을 편하게 써 주세요.');
   askField('situation');
 }
 
@@ -156,6 +126,7 @@ function askField(k) {
   const q = k === 'situation' && state.vagueMistake
     ? '계좌번호나 금액을 잘못 입력하셨나요, 거래 상대에게 보냈는데 문제가 생겼나요?'
     : def.question;
+  state.lastQuestion = q;
   bubble('bot', q);
   setChoices([
     ...def.options.map((o) => ({ text: o.text, onClick: () => answer(k, o.value, o.text, o.set) })),
@@ -179,7 +150,6 @@ function back() {
   state.result = null;
   while (logEl.children.length > prev.logCount) logEl.lastElementChild.remove();
   inputEl.placeholder = '예: 이어폰 산다고 15만 원 보냈는데 판매자가 답이 없어요';
-  renderRules();
   askField(prev.k);
 }
 
@@ -196,7 +166,6 @@ function answer(k, value, text, set = null) {
   }
   state.result = null;
   if (k === 'situation') state.vagueMistake = false;
-  renderRules();
   proceed();
 }
 
@@ -234,7 +203,10 @@ async function handleText(text) {
       bubble('bot', '지금 많이 힘드시다면 먼저 ☎109 자살예방 상담전화에 연락해 주세요. 24시간 언제든 무료예요.\n피해 정리와 기관 안내는 위 결과에 그대로 남아 있어요.');
       return;
     }
-    return askQuestion(text);
+    state.askedQ.add(text);
+    await askQuestion(text);
+    afterAnswer();
+    return;
   }
   setChoices([]);
   state.vagueMistake = /잘못\s*(보냈|보낸|송금|이체)/.test(text) && !/계좌번호|금액/.test(text);
@@ -253,7 +225,6 @@ async function handleText(text) {
     if (v !== UNKNOWN) state.facts[k] = v;
   }
   if (resp.facts?.crisis === '있음') showCrisis();
-  renderRules();
   showUnderstood(resp);
 }
 
@@ -275,6 +246,7 @@ function showUnderstood(resp) {
     selects[k] = sel;
     grid.append(el('label', { for: id }, FIELDS[k].label), sel);
   }
+  const known = SHOWN.filter((k) => state.facts[k] && state.facts[k] !== UNKNOWN);
   const go = () => {
     if (state.busy) return;
     lockOldCards();
@@ -284,12 +256,16 @@ function showUnderstood(resp) {
     }
     state.result = null;
     bubble('user', '맞아요, 이어서 진행할게요');
-    renderRules();
     proceed();
   };
   const card = el('div', { class: 'card' },
     el('div', { class: 'card__head' }, '이렇게 이해했어요'),
-    el('div', { class: 'card__body' }, el('p', { class: 'disclaimer', style: 'margin-bottom:10px' }, '틀린 칸은 바로 고칠 수 있어요. "모름"인 칸은 버튼으로 다시 여쭤볼게요.'), grid),
+    el('div', { class: 'card__body' },
+      known.length
+        ? el('ul', { class: 'understood-list' }, ...known.map((k) => el('li', {}, el('span', {}, FIELDS[k].label), el('b', {}, state.facts[k]))))
+        : el('p', { class: 'disclaimer' }, '아직 파악된 내용이 없어요. 이어서 하나씩 여쭤볼게요.'),
+      el('p', { class: 'disclaimer', style: 'margin-top:10px' }, '모르는 부분은 이어서 하나씩 여쭤볼게요.'),
+      el('details', { class: 'more' }, el('summary', {}, '틀린 곳이 있어요 (고치기)'), grid)),
     el('div', { class: 'card__foot' }, el('button', { type: 'button', class: 'btn btn--navy', onclick: go }, state.crisisShown ? '이어서 피해 상황 정리하기' : '맞아요, 계속')));
   const node = wide(card);
   node.append(metaLine(resp));
@@ -448,11 +424,10 @@ function showResult() {
   const f = state.facts;
   const r = classify(f);
   state.result = r;
-  renderRules();
 
   const key = TITLES[r.scheme?.id] ? r.scheme.id : (TITLES[r.sub] ? r.sub : r.type);
   const why = r.rule
-    ? el('p', { class: 'result__why' }, '분류 규칙표 ', el('b', {}, `${r.rule}번 줄`), `에 맞았어요: ${r.reason}.`)
+    ? el('p', { class: 'result__why' }, `${r.reason}.`)
     : el('p', { class: 'result__why' }, `${r.reason}.`);
   const schemeWhy = r.scheme
     ? el('p', { class: 'result__why', style: 'margin-top:4px' }, '수법 구분: ', el('b', {}, r.scheme.name), ` — ${r.scheme.basis}. 수법은 안내를 고르기 위한 구분이며, 사기인지는 수사기관이 판단해요.`)
@@ -501,24 +476,117 @@ function showResult() {
   title.focus({ preventScroll: true });
   box.scrollIntoView({ block: 'start' });
   announce(`진단 결과: ${badge}. ${TITLES[key]}`);
-  inputEl.placeholder = '기관 절차를 더 물어보세요';
-  setChoices([
-    ...suggestions(r).map((q) => ({ text: q, onClick: () => onFreeText(q) })),
-    { text: '처음부터 다시', quiet: true, onClick: start },
-  ]);
+  inputEl.placeholder = '궁금한 점을 직접 물어보셔도 돼요';
+  renderFollowChoices();
   // 결과를 먼저 읽게 두고(화면을 옮기지 않음), 그 아래에서 정리표 채우기 질문을 이어서 한다
   if (hasSheet) startFill(f, r);
+  else askClosing();
 }
 
-// 결과 종류에 맞는 추천 질문
+// 결과 종류에 맞는 추천 질문 — 모두 안내 문서(docs/답변참고문서/청킹)에서 근거를 찾을 수 있는 문장이다
 function suggestions(r) {
   const id = r.scheme?.id;
-  if (id === 'phishing') return ['악성 앱을 설치했으면 어떻게 해요?', '보이스피싱 지급정지는 어떻게 해요?'];
-  if (id === 'fakepay') return ['진짜 안전결제는 어떻게 구별해요?', '경찰 신고할 때 뭘 준비해요?'];
-  if (r.type === 'fraud') return ['경찰 신고할 때 뭘 준비해요?', '은행이 지급정지를 해 주나요?'];
+  if (id === 'phishing') return ['악성앱 설치가 의심될 때는 어떻게 해야 하나요?', '보이스피싱 지급정지는 어떻게 해요?'];
+  if (id === 'fakepay') return ['진짜 안전결제는 어떻게 구별해요?', '경찰서에 신고하는 방법을 알려 주세요'];
+  if (r.type === 'fraud') return ['경찰서에 신고하는 방법을 알려 주세요', '은행에 지급정지를 요청할 수 있나요?'];
   if (r.type === 'dispute') return ['분쟁조정은 어떻게 신청해요?', '지급명령이 뭐예요?'];
   if (r.sub === 'mistake') return ['착오송금 반환지원은 어떻게 신청해요?'];
-  return ['365센터 상담은 어떻게 받아요?', '경찰 신고할 때 뭘 준비해요?'];
+  return ['365센터 상담은 어떻게 받아요?', '경찰서에 신고하는 방법을 알려 주세요'];
+}
+
+// 어느 결과에서나 이어서 물어볼 만한 질문(결과별 추천이 떨어지면 이쪽에서 채운다)
+const MORE_QUESTIONS = [
+  '보낸 돈을 돌려받을 수 있나요?',
+  '소액인데 빨리 돌려받는 방법이 있나요?',
+  '온라인피해 365센터는 어떤 곳이에요?',
+  '더치트에 피해 사례를 등록해도 되나요?',
+  '중고거래 플랫폼에는 어떻게 신고하나요?',
+  '거래를 취소하고 손해배상을 받을 수 있나요?',
+];
+
+// 정리표 채우기 단계마다 그 순간 궁금할 만한 질문
+const FILL_QUESTIONS = {
+  when: ['경찰서에 신고하는 방법을 알려 주세요', '보낸 돈을 돌려받을 수 있나요?'],
+  account: ['은행에 지급정지를 요청할 수 있나요?', '보낸 돈을 돌려받을 수 있나요?'],
+  who: ['더치트에 피해 사례를 등록해도 되나요?', '중고거래 플랫폼에는 어떻게 신고하나요?'],
+  item: ['중고거래 플랫폼에는 어떻게 신고하나요?', '거래를 취소하고 손해배상을 받을 수 있나요?'],
+  files: ['경찰서에 신고하는 방법을 알려 주세요', '소액인데 빨리 돌려받는 방법이 있나요?'],
+};
+
+function pickSuggestions(n = 3) {
+  const pool = state.fillActive
+    ? (FILL_QUESTIONS[state.fillStepId] || [])
+    : [...suggestions(state.result || {}), ...MORE_QUESTIONS];
+  return [...new Set(pool)].filter((q) => !state.askedQ.has(q)).slice(0, n);
+}
+
+// 답을 해 준 뒤·결과를 보여 준 뒤마다 「다음에 누를 만한 것」을 바닥 선택지로 다시 깐다
+function renderFollowChoices() {
+  const asks = pickSuggestions().map((q) => ({ text: q, onClick: () => onFreeText(q) }));
+  if (state.fillActive) {
+    setChoices([
+      ...asks,
+      { text: '↑ 정리표 채우기로 돌아가기', quiet: true, onClick: () => state.fillCard?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
+    ]);
+    return;
+  }
+  if (state.closed) {
+    setChoices([
+      { text: '궁금한 점이 더 생겼어요', onClick: reopenGuide },
+      { text: '처음부터 다시', quiet: true, onClick: start },
+    ]);
+    return;
+  }
+  setChoices([
+    ...asks,
+    { text: '괜찮아요 · 안내 마칠게요', onClick: endGuide },
+    { text: '처음부터 다시', quiet: true, onClick: start },
+  ]);
+}
+
+// 정리표(또는 결과)까지 본 뒤: 더 궁금한 점이 없는지 먼저 묻고, 대답을 들은 뒤에 마친다
+function askClosing() {
+  bubble('bot', '여기까지 정리해 드렸어요. 혹시 더 궁금한 점이나, 막막한 부분은 없으세요?\n아래 추천 질문을 누르거나 직접 물어봐 주세요. 괜찮으시면 안내를 마칠게요.');
+  announce('더 궁금한 점이 없는지 확인해요.');
+  renderFollowChoices();
+}
+
+function endGuide() {
+  if (state.busy) return;
+  state.userActed = true;
+  state.closed = true;
+  bubble('user', '괜찮아요, 안내 마칠게요');
+  const f = state.facts;
+  const r = state.result || classify(f);
+  const todos = todoList(f, r).slice(0, 3);
+  const lines = [
+    '끝까지 읽어 주셔서 고마워요. 마지막으로 꼭 챙길 것만 다시 정리해 드릴게요.',
+    ...(todos.length ? ['', '지금 하실 일', ...todos.map((t, i) => `${i + 1}. ${t}`)] : []),
+    '',
+    '도움받을 곳',
+    '· 온라인피해 365센터 ☎142-235 (평일 09:00~18:00), 누리집 www.helpos.kr 온라인 상담(24시간 신청)',
+    '· 경찰 신고: 사이버범죄 신고시스템(ECRM), 급하면 ☎112',
+    '',
+    '혼자 감당하지 않으셔도 돼요. 많이 힘드시면 ☎109 자살예방 상담전화(24시간)도 있어요.',
+    '궁금한 점이 생기면 아래 입력칸에 언제든 물어보세요.',
+  ];
+  bubble('bot', lines.join('\n'));
+  announce('안내를 마쳤어요. 궁금한 점이 생기면 언제든 물어보세요.');
+  renderFollowChoices();
+}
+
+function reopenGuide() {
+  state.closed = false;
+  bubble('user', '궁금한 점이 더 생겼어요');
+  bubble('bot', '네, 편하게 물어보세요. 아래 추천 질문을 누르거나 직접 써 주셔도 돼요.');
+  renderFollowChoices();
+}
+
+// 질문에 답한 뒤 이어서 할 일을 안내한다
+function afterAnswer() {
+  if (state.fillActive) bubble('bot', '정리표는 위 카드에서 이어서 채우시면 돼요. 더 궁금한 건 계속 물어보세요.');
+  else if (!state.closed) bubble('bot', '다른 궁금한 점은 없으세요? 괜찮으시면 안내를 마칠게요.');
+  renderFollowChoices();
 }
 
 function copyButton(label, getText) {
@@ -767,6 +835,7 @@ const FILL_STEPS = [
 function startFill(f, r) {
   const intro = bubble('bot', '정리표를 같이 채워 볼까요? 몇 가지만 답하면 경찰 · 상담원이 바로 알아볼 수 있게 돼요.\n이 내용은 서버나 AI로 보내지 않고, 모르면 건너뛰어도 돼요.', null, { noScroll: true });
   state.fillAnchor = intro;
+  state.fillActive = true;
   runFill(f, r, 0, true);
 }
 
@@ -774,6 +843,7 @@ function runFill(f, r, i, first = false) {
   while (i < FILL_STEPS.length && FILL_STEPS[i].skip?.(f, r)) i++;
   if (i >= FILL_STEPS.length) { finishFill(); return; }
   const step = FILL_STEPS[i];
+  state.fillStepId = step.id;
   const total = FILL_STEPS.filter((s) => !s.skip?.(f, r)).length;
   const no = FILL_STEPS.slice(0, i + 1).filter((s) => !s.skip?.(f, r)).length;
   const body = step.attach
@@ -789,6 +859,8 @@ function runFill(f, r, i, first = false) {
     el('div', { class: 'card__body' }, el('p', { class: 'disclaimer', style: 'margin-bottom:10px' }, step.note), body),
     el('div', { class: 'card__foot' }, next, skip));
   wide(card, { noScroll: first });
+  state.fillCard = card;
+  renderFollowChoices();
   if (!first) card.querySelector('input, button')?.focus({ preventScroll: true });
 }
 
@@ -802,6 +874,9 @@ function finishFill() {
   const n = state.attachments.length;
   bubble('bot', el('span', {}, `정리표에 반영했어요. 결과의 「${n ? `정리표 + 캡처 ${n}개 내려받기` : '정리표 내려받기'}」를 누르면 ${n ? '정리표와 캡처 원본을 ZIP 파일 하나로' : '정리표를'} 받을 수 있어요.\n상담원 요약에도 함께 들어가요. `, toSheet));
   announce('정리표 채우기를 마쳤어요.');
+  state.fillActive = false;
+  state.fillCard = null;
+  askClosing();
 }
 
 // ---------- 근거 법령 ----------
